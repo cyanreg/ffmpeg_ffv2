@@ -121,13 +121,90 @@ end:
     ff_daalaent_encode_bits(e, 1, 1);
 }
 
+#include <float.h>
+
+static int64_t ppp_pvq_search_c(float *X, int *y, int K, int N)
+{
+    int64_t i, y_norm = 0;
+    float res = 0.0f, xy_norm = 0.0f;
+
+    for (i = 0; i < N; i++)
+        res += FFABS(X[i]);
+
+    res = K/(res + FLT_EPSILON);
+
+    for (i = 0; i < N; i++) {
+        y[i] = lrintf(res*X[i]);
+        y_norm  += y[i]*y[i];
+        xy_norm += y[i]*X[i];
+        K -= FFABS(y[i]);
+    }
+
+    while (K) {
+        int max_idx = 0, phase = FFSIGN(K);
+        float max_num = 0.0f;
+        float max_den = 1.0f;
+        y_norm += 1.0f;
+
+        for (i = 0; i < N; i++) {
+            /* If the sum has been overshot and the best place has 0 pulses allocated
+             * to it, attempting to decrease it further will actually increase the
+             * sum. Prevent this by disregarding any 0 positions when decrementing. */
+            const int ca = 1 ^ ((y[i] == 0) & (phase < 0));
+            const int y_new = y_norm  + 2*phase*FFABS(y[i]);
+            float xy_new = xy_norm + 1*phase*FFABS(X[i]);
+            xy_new = xy_new * xy_new;
+            if (ca && (max_den*xy_new) > (y_new*max_num)) {
+                max_den = y_new;
+                max_num = xy_new;
+                max_idx = i;
+            }
+        }
+
+        K -= phase;
+
+        phase *= FFSIGN(X[max_idx]);
+        xy_norm += 1*phase*X[max_idx];
+        y_norm  += 2*phase*y[max_idx];
+        y[max_idx] += phase;
+    }
+
+    return y_norm;
+}
+
+#define DOLAP 1
+
 static void quant_block(dctcoef *src, int qp, int tx, DaalaEntropy *e)
 {
     int i;
     int len = FFV2_IDX_TO_BS(FFV2_IDX_X(tx))*FFV2_IDX_TO_BS(FFV2_IDX_Y(tx));
+    int quant_coeffs[4096] = { 0 };
+    float norm_coeffs[4096] = { 0.0f };
+    float lin_ener = 0;
 
-    for (i = 0; i < len; i++) {
-        int coeff = src[i]/qp;
+    encode_golomb(e, FFABS(src[0]));
+    if (src[0])
+        ff_daalaent_encode_bits(e, src[0] < 0, 1);
+
+    for (int i = 1; i < len; i++)
+        lin_ener += (int64_t)src[i] * (int64_t)src[i];
+
+    lin_ener = sqrtf(lin_ener);
+
+    for (int i = 0; i < len - 1; i++)
+        norm_coeffs[i] = src[i + 1] / lin_ener;
+
+    int cnt = ppp_pvq_search_c(norm_coeffs, quant_coeffs, qp, len - 1);
+    float cntf = sqrt(cnt);
+    int pcnt = 0;
+
+    encode_golomb(e, lin_ener);
+
+    for (i = 0; i < len - 1; i++) {
+        int coeff = quant_coeffs[i];
+        if (pcnt >= qp)
+            break;
+        pcnt += FFABS(coeff);
         encode_golomb(e, FFABS(coeff));
         if (coeff)
             ff_daalaent_encode_bits(e, coeff < 0, 1);
@@ -291,6 +368,7 @@ static void prefilter_sb_blocks_hor(FFV2EncCtx *s, FFV2FCBuf *buf, FFV2SB *sb)
 
 static void prefilter_block(FFV2EncCtx *s, FFV2FCBuf *buf)
 {
+#if DOLAP
     for (int j = 0; j < s->num_sb_y; j++) {
         for (int i = 1; i < s->num_sb_x; i++) {
             for (int p = 0; p < s->planes; p++) {
@@ -308,6 +386,7 @@ static void prefilter_block(FFV2EncCtx *s, FFV2FCBuf *buf)
             }
         }
     }
+#endif
 }
 
 static void rdo_sbs(FFV2EncCtx *s, FFV2FCBuf *buf, DaalaEntropy *e)
@@ -392,7 +471,7 @@ static void encode_sbs(FFV2EncCtx *s, FFV2FCBuf *buf, DaalaEntropy *e)
 static void encode_frame_header(FFV2EncCtx *s, DaalaEntropy *e)
 {
     ff_daalaent_encode_uint(e, s->avctx->pix_fmt, AV_PIX_FMT_NB);
-    ff_daalaent_encode_uint(e, s->qp, 2048);
+    encode_golomb(e, s->qp);
 }
 
 static int ffv2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
@@ -402,7 +481,7 @@ static int ffv2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     DaalaEntropy ent;
     FFV2EncCtx *s = avctx->priv_data;
 
-    s->qp = 1024;
+    s->qp = avctx->global_quality;
 
     daalaent_cdf_reset(&s->subdiv_cdf);
 

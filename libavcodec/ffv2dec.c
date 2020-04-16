@@ -84,17 +84,36 @@ static uint32_t decode_golomb(DaalaEntropy *e)
     return coeff - 1;
 }
 
+#define DOLAP 1
+
 static void dequant_block(dctcoef *dst, int qp, int tx, DaalaEntropy *e)
 {
     int i;
     int len = FFV2_IDX_TO_BS(FFV2_IDX_X(tx))*FFV2_IDX_TO_BS(FFV2_IDX_Y(tx));
+    int pulses[4096] = { 0 };
 
-    for (i = 0; i < len; i++) {
-        dst[i] = decode_golomb(e);
-        if (dst[i])
-            dst[i] *= 1 - 2*ff_daalaent_decode_bits(e, 1);
-        dst[i] *= qp;
+    dst[0] = decode_golomb(e);
+    if (dst[0])
+        dst[0] *= 1 - 2*ff_daalaent_decode_bits(e, 1);
+
+    float mag = decode_golomb(e);
+    int cnt = 0;
+    int pcnt = 0;
+
+    for (i = 0; i < len - 1; i++) {
+        if (pcnt >= qp)
+            break;
+        pulses[i] = decode_golomb(e);
+        pcnt += pulses[i];
+        if (pulses[i])
+            pulses[i] *= 1 - 2*ff_daalaent_decode_bits(e, 1);
+        cnt += pulses[i] * pulses[i];
     }
+
+    mag /= sqrt(cnt);
+
+    for (i = 0; i < len - 1; i++)
+        dst[i + 1] = pulses[i] * mag;
 }
 
 static int decode_block(FFV2DecCtx *s, DaalaEntropy *e, FFV2FCBuf *buf,
@@ -190,6 +209,8 @@ static void decode_sbs(FFV2DecCtx *s, FFV2FCBuf *buf, DaalaEntropy *e)
         }
     }
 
+#if DOLAP
+
     for (int j = 1; j < s->num_sb_y; j++) {
         for (int i = 0; i < s->num_sb_x; i++) {
             for (int p = 0; p < s->planes; p++) {
@@ -207,6 +228,8 @@ static void decode_sbs(FFV2DecCtx *s, FFV2FCBuf *buf, DaalaEntropy *e)
             }
         }
     }
+
+#endif
 
 #ifdef DEBUGGING
     for (int p = 0; p < s->planes; p++) {
@@ -229,7 +252,7 @@ static void decode_sbs(FFV2DecCtx *s, FFV2FCBuf *buf, DaalaEntropy *e)
 static void decode_frame_header(FFV2DecCtx *s, DaalaEntropy *e)
 {
     s->avctx->pix_fmt = ff_daalaent_decode_uint(e, AV_PIX_FMT_NB);
-    s->qp = ff_daalaent_decode_uint(e, 2048);
+    s->qp = decode_golomb(e);
 }
 
 #ifdef DEBUGGING
