@@ -269,6 +269,13 @@ static const AVCodecDescriptor codec_descriptors[] = {
         .props     = AV_CODEC_PROP_LOSSLESS,
     },
     {
+        .id        = AV_CODEC_ID_FFV2,
+        .type      = AVMEDIA_TYPE_VIDEO,
+        .name      = "ffv2",
+        .long_name = NULL_IF_CONFIG_SMALL("FFV2"),
+        .props     = AV_CODEC_PROP_LOSSY | AV_CODEC_PROP_LOSSLESS | AV_CODEC_PROP_REORDER,
+    },
+    {
         .id        = AV_CODEC_ID_4XM,
         .type      = AVMEDIA_TYPE_VIDEO,
         .name      = "4xm",
