@@ -124,97 +124,66 @@ end:
 
 #include <float.h>
 
-static int64_t ppp_pvq_search_c(float *X, int *y, int K, int N)
-{
-    int64_t i, y_norm = 0;
-    float res = 0.0f, xy_norm = 0.0f;
-
-    for (i = 0; i < N; i++)
-        res += FFABS(X[i]);
-
-    res = K/(res + FLT_EPSILON);
-
-    for (i = 0; i < N; i++) {
-        y[i] = lrintf(res*X[i]);
-        y_norm  += y[i]*y[i];
-        xy_norm += y[i]*X[i];
-        K -= FFABS(y[i]);
-    }
-
-    while (K) {
-        int max_idx = 0, phase = FFSIGN(K);
-        float max_num = 0.0f;
-        float max_den = 1.0f;
-        y_norm += 1.0f;
-
-        for (i = 0; i < N; i++) {
-            /* If the sum has been overshot and the best place has 0 pulses allocated
-             * to it, attempting to decrease it further will actually increase the
-             * sum. Prevent this by disregarding any 0 positions when decrementing. */
-            const int ca = 1 ^ ((y[i] == 0) & (phase < 0));
-            const int y_new = y_norm  + 2*phase*FFABS(y[i]);
-            float xy_new = xy_norm + 1*phase*FFABS(X[i]);
-            xy_new = xy_new * xy_new;
-            if (ca && (max_den*xy_new) > (y_new*max_num)) {
-                max_den = y_new;
-                max_num = xy_new;
-                max_idx = i;
-            }
-        }
-
-        K -= phase;
-
-        phase *= FFSIGN(X[max_idx]);
-        xy_norm += 1*phase*X[max_idx];
-        y_norm  += 2*phase*y[max_idx];
-        y[max_idx] += phase;
-    }
-
-    return y_norm;
-}
+float ff_pvq_search_exact_avx(float *X, int *y, int K, int N);
 
 #define DOLAP 1
 
+static float gain_compand(float g, int q0, float beta)
+{
+    if (beta == 1.0f) {
+        return g / (double)q0;
+    } else {
+        return pow(g, 1.0f / beta) / (double)q0;
+    }
+}
+
 static void quant_block(FFV2EncCtx *s, dctcoef *src, int qp, int tx, DaalaEntropy *e)
 {
-    int i;
-    int len = FFV2_IDX_TO_BS(FFV2_IDX_X(tx))*FFV2_IDX_TO_BS(FFV2_IDX_Y(tx));
+    int bands_start[16];
+    int num_bands;
+
+    ffv2_num_bands(tx, bands_start, &num_bands);
 
     /* DC value */
     encode_golomb(e, FFABS(src[0]));
     if (src[0])
         ff_daalaent_encode_bits(e, src[0] < 0, 1);
 
+    for (int i = 0; i < num_bands; i++) {
+        dctcoef *src_c = src + 1 + bands_start[i];
+        int len = bands_start[i + 1] - bands_start[i];
 
+        LOCAL_ALIGNED_32(int, quant_coeffs, [4096]);
+        LOCAL_ALIGNED_32(float, norm_coeffs, [4096]);
+        int64_t igain = 0;
 
-    /* ACs */
-    int quant_coeffs[4096] = { 0 };
-    float norm_coeffs[4096] = { 0.0f };
-    float gain = 0;
+        memset(quant_coeffs, 0, 4096*sizeof(int));
+        memset(norm_coeffs, 0, 4096*sizeof(float));
 
-    for (int i = 1; i < len; i++)
-        gain += (int64_t)src[i] * (int64_t)src[i];
+        for (int j = 0; j < len; j++)
+            igain += (int64_t)src_c[j] * (int64_t)src_c[j];
 
-    gain = sqrtf(gain) + FLT_EPSILON;
+        float fgain = sqrtf(igain) + FLT_EPSILON;
 
-    for (int i = 0; i < len - 1; i++)
-        norm_coeffs[i] = src[i + 1] / gain;
+        for (int j = 0; j < len; j++)
+            norm_coeffs[j] = src_c[j] / fgain;
 
-    ppp_pvq_search_c(norm_coeffs, quant_coeffs, qp, len - 1);
-    int pcnt = 0;
+        ff_pvq_search_exact_avx(norm_coeffs, quant_coeffs, qp, len);
+        int pcnt = 0;
 
-    encode_golomb(e, gain);
+        encode_golomb(e, gain_compand(fgain, 1, 1.5f));
 
-    for (i = 0; i < len - 1; i++) {
-        if (pcnt >= qp)
-            break;
+        for (int j = 0; j < len; j++) {
+            if (pcnt >= qp)
+                break;
 
-        int coeff = quant_coeffs[i];
-        ff_daalaent_encode_cdf_adapt(e, &s->test_cdf, FFABS(coeff), av_log2(i), qp);
-        if (coeff)
-            ff_daalaent_encode_bits(e, coeff < 0, 1);
+            int coeff = quant_coeffs[j];
+            ff_daalaent_encode_cdf_adapt(e, &s->test_cdf, FFABS(coeff), i, qp);
+            if (coeff)
+                ff_daalaent_encode_bits(e, coeff < 0, 1);
 
-        pcnt += FFABS(coeff);
+            pcnt += FFABS(coeff);
+        }
     }
 }
 
@@ -489,7 +458,7 @@ static int ffv2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     FFV2EncCtx *s = avctx->priv_data;
 
     s->qp = avctx->global_quality;
-    daalaent_cdf_alloc(&s->test_cdf, 12, s->qp, 64, 0, 6, 0);
+    daalaent_cdf_alloc(&s->test_cdf, 13, s->qp, 64, 0, 6, 0);
 
     daalaent_cdf_reset(&s->subdiv_cdf);
     daalaent_cdf_reset(&s->test_cdf);

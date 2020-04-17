@@ -88,36 +88,56 @@ static uint32_t decode_golomb(DaalaEntropy *e)
 #define DEBUGGING
 #define DOLAP 1
 
+static float gain_expand(float cg, int q0, float beta)
+{
+    if (beta == 1.0f) {
+        return cg * (double)q0;
+    } else {
+        return pow(cg * q0, beta);
+    }
+}
+
 static void dequant_block(FFV2DecCtx *s, dctcoef *dst, int qp, int tx, DaalaEntropy *e)
 {
-    int i;
-    int len = FFV2_IDX_TO_BS(FFV2_IDX_X(tx))*FFV2_IDX_TO_BS(FFV2_IDX_Y(tx));
+    int tbs = FFV2_IDX_TO_BS(FFV2_IDX_X(tx))*FFV2_IDX_TO_BS(FFV2_IDX_Y(tx));
     int pulses[4096] = { 0 };
+    int bands_start[16];
+    int num_bands;
 
+    ffv2_num_bands(tx, bands_start, &num_bands);
+
+    memset(dst, 0, tbs * sizeof(dctcoef));
+
+    /* DC value */
     dst[0] = decode_golomb(e);
     if (dst[0])
         dst[0] *= 1 - 2*ff_daalaent_decode_bits(e, 1);
 
-    float mag = decode_golomb(e);
-    int cnt = 0;
-    int pcnt = 0;
+    for (int i = 0; i < num_bands; i++) {
+        dctcoef *dst_c = dst + 1 + bands_start[i];
+        int len = bands_start[i + 1] - bands_start[i];
 
-    for (i = 0; i < len - 1; i++) {
-        if (pcnt >= qp)
-            break;
+        float mag = gain_expand(decode_golomb(e), 1, 1.5f);
+        int cnt = 0;
+        int pcnt = 0;
 
-        pulses[i] = ff_daalaent_decode_cdf_adapt(e, &s->test_cdf, av_log2(i), qp);
-        if (pulses[i])
-            pulses[i] *= 1 - 2*ff_daalaent_decode_bits(e, 1);
+        for (int j = 0; j < len; j++) {
+            if (pcnt >= qp)
+                break;
 
-        pcnt += FFABS(pulses[i]);
-        cnt += pulses[i] * pulses[i];
+            pulses[j] = ff_daalaent_decode_cdf_adapt(e, &s->test_cdf, i, qp);
+            if (pulses[j])
+                pulses[j] *= 1 - 2*ff_daalaent_decode_bits(e, 1);
+
+            pcnt += FFABS(pulses[j]);
+            cnt += pulses[j] * pulses[j];
+        }
+
+        mag /= sqrt(cnt);
+
+        for (int j = 0; j < len; j++)
+            dst_c[j] = pulses[j] * mag;
     }
-
-    mag /= sqrt(cnt);
-
-    for (i = 0; i < len - 1; i++)
-        dst[i + 1] = pulses[i] * mag;
 }
 
 static int decode_block(FFV2DecCtx *s, DaalaEntropy *e, FFV2FCBuf *buf,
@@ -257,7 +277,7 @@ static void decode_frame_header(FFV2DecCtx *s, DaalaEntropy *e)
 {
     s->avctx->pix_fmt = ff_daalaent_decode_uint(e, AV_PIX_FMT_NB);
     s->qp = decode_golomb(e);
-    daalaent_cdf_alloc(&s->test_cdf, 12, s->qp, 64, 0, 6, 0);
+    daalaent_cdf_alloc(&s->test_cdf, 13, s->qp, 64, 0, 6, 0);
     daalaent_cdf_reset(&s->test_cdf);
 }
 

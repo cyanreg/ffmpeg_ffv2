@@ -57,6 +57,8 @@ extern const uint16_t ff_daalaent_laplace_offset[];
 
 typedef struct FFV2BlockLayout {
     const int zigzag_len;
+    const int bands_start[3];
+    const int bands_num;
     const uint8_t zigzag[][2];
 } FFV2BlockLayout;
 

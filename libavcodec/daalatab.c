@@ -217,9 +217,9 @@ const uint16_t ff_daalaent_laplace_offset[] = {
 #include "zigzags.h"
 
 const FFV2BlockLayout *ffv2_partition_layout_freq[][5] = {
-    { &layout_freq_4x4,  &layout_freq_4x8,  &layout_freq_4x16,  &layout_freq_4x32,  &layout_freq_4x64,  },
-    { &layout_freq_8x4,  &layout_freq_8x8,  &layout_freq_8x16,  &layout_freq_8x32,  &layout_freq_8x64,  },
-    { &layout_freq_16x4, &layout_freq_16x8, &layout_freq_16x16, &layout_freq_16x32, &layout_freq_16x64, },
-    { &layout_freq_32x4, &layout_freq_32x8, &layout_freq_32x16, &layout_freq_32x32, &layout_freq_32x64, },
-    { &layout_freq_64x4, &layout_freq_64x8, &layout_freq_64x16, &layout_freq_64x32, &layout_freq_64x64, },
+    { &layout_freq_4x4,              NULL,               NULL,               NULL,               NULL, },
+    {             NULL,  &layout_freq_8x8,               NULL,               NULL,               NULL, },
+    {             NULL,              NULL, &layout_freq_16x16,               NULL,               NULL, },
+    {             NULL,              NULL,               NULL, &layout_freq_32x32,               NULL, },
+    {             NULL,              NULL,               NULL,               NULL, &layout_freq_64x64, },
 };

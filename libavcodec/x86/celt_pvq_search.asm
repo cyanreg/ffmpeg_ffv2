@@ -212,7 +212,7 @@ align 16
 ; uint32 N      - Number of vector elements. Must be 0 < N < 256
 ;
 %macro PVQ_FAST_SEARCH 1
-cglobal pvq_search%1, 4, 5+num_pic_regs, 11, 256*4, inX, outY, K, N
+cglobal pvq_search%1, 4, 5+num_pic_regs, 11, 4096*4, inX, outY, K, N
 %define tmpX rsp
 %define tmpY outYq
 

@@ -121,6 +121,8 @@ static inline FFV2Block *ffv2_get_from_grid(FFV2FCBuf *buf, int ox, int oy)
     return buf->grid[oy*buf->grid_stride + ox];
 }
 
+void ffv2_num_bands(int tx, int *bands_start, int *num_bands);
+
 typedef struct FFV2DSP {
     void (*lap_prefilter_hor) (dctcoef *src, ptrdiff_t stride, int len, int lap_radius);
     void (*lap_postfilter_hor)(dctcoef *src, ptrdiff_t stride, int len, int lap_radius);

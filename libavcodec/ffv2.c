@@ -97,6 +97,28 @@ static void coding_to_raster(dctcoef *dst, int dst_stride,
     }
 }
 
+void ffv2_num_bands(int tx, int *bands_start, int *num_bands)
+{
+    int nb = 0;
+    int bs_x = 0, bsize_x = FFV2_IDX_X(tx);
+    int bs_y = 0, bsize_y = FFV2_IDX_Y(tx);
+
+    while (1) {
+        const FFV2BlockLayout *layout = ffv2_partition_layout_freq[bs_x][bs_y];
+
+        for (int i = 0; i < layout->bands_num; i++)
+            bands_start[nb++] = layout->bands_start[i];
+
+        if ((bs_x == bsize_x) && (bs_y == bsize_y))
+            break;
+        bs_x = FFMIN(bs_x + 1, bsize_x);
+        bs_y = FFMIN(bs_y + 1, bsize_y);
+    }
+
+    bands_start[nb] = FFV2_IDX_TO_BS(bsize_x) * FFV2_IDX_TO_BS(bsize_y);
+    *num_bands = nb;
+}
+
 #if 1
 #  define OD_DCT_OVERFLOW_CHECK(val, scale, offset, idx) \
   do { \
