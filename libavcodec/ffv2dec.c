@@ -29,6 +29,7 @@ typedef struct FFV2DecCtx {
     AVCodecContext *avctx;
 
     DaalaCDF subdiv_cdf;
+    DaalaCDF test_cdf;
 
     int qp;
     int num_sb_x;
@@ -84,9 +85,10 @@ static uint32_t decode_golomb(DaalaEntropy *e)
     return coeff - 1;
 }
 
+#define DEBUGGING
 #define DOLAP 1
 
-static void dequant_block(dctcoef *dst, int qp, int tx, DaalaEntropy *e)
+static void dequant_block(FFV2DecCtx *s, dctcoef *dst, int qp, int tx, DaalaEntropy *e)
 {
     int i;
     int len = FFV2_IDX_TO_BS(FFV2_IDX_X(tx))*FFV2_IDX_TO_BS(FFV2_IDX_Y(tx));
@@ -103,10 +105,12 @@ static void dequant_block(dctcoef *dst, int qp, int tx, DaalaEntropy *e)
     for (i = 0; i < len - 1; i++) {
         if (pcnt >= qp)
             break;
-        pulses[i] = decode_golomb(e);
-        pcnt += pulses[i];
+
+        pulses[i] = ff_daalaent_decode_cdf_adapt(e, &s->test_cdf, av_log2(i), qp);
         if (pulses[i])
             pulses[i] *= 1 - 2*ff_daalaent_decode_bits(e, 1);
+
+        pcnt += FFABS(pulses[i]);
         cnt += pulses[i] * pulses[i];
     }
 
@@ -136,7 +140,7 @@ static int decode_block(FFV2DecCtx *s, DaalaEntropy *e, FFV2FCBuf *buf,
     blk->type = FFV2_TX(s_x, s_y, tx_type);
 
     for (int p = 0; p < s->planes; p++) {
-        dequant_block(temp, blk->qp, blk->type, e);
+        dequant_block(s, temp, blk->qp, blk->type, e);
         s->dsp.coding_to_raster(temp2, b_stride, temp, blk->type);
         s->dsp.inv_tx(&s->dsp, blk->type, blk->pix[p], buf->pix_stride[p], temp2, b_stride);
     }
@@ -253,6 +257,8 @@ static void decode_frame_header(FFV2DecCtx *s, DaalaEntropy *e)
 {
     s->avctx->pix_fmt = ff_daalaent_decode_uint(e, AV_PIX_FMT_NB);
     s->qp = decode_golomb(e);
+    daalaent_cdf_alloc(&s->test_cdf, 12, s->qp, 64, 0, 6, 0);
+    daalaent_cdf_reset(&s->test_cdf);
 }
 
 #ifdef DEBUGGING
@@ -266,9 +272,13 @@ static void decode_frame_header(FFV2DecCtx *s, DaalaEntropy *e)
 static void print_debug_info(uint8_t *dst1, int linesize, int depth, const char *str)
 {
     int i;
+    if (depth != 8)
+        return;
+
     for (i = 0; i < strlen(str); i++) {
-        ff_draw_pc_font(dst1 + (i+1)*(depth > 8 ? 16 : 8), depth, linesize,
-                        avpriv_cga_font, 8, str[i], 255, 1);
+        ff_draw_pc_font(dst1 + (i+1)*(depth > 8 ? 16 : 8), linesize,
+                        avpriv_cga_font, 8,
+                        str[i], 255, 0);
     }
 }
 

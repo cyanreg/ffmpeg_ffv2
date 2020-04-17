@@ -31,6 +31,7 @@ typedef struct FFV2EncCtx {
     AVCodecContext *avctx;
 
     DaalaCDF subdiv_cdf;
+    DaalaCDF test_cdf;
 
     int qp;
     int num_sb_x;
@@ -174,40 +175,46 @@ static int64_t ppp_pvq_search_c(float *X, int *y, int K, int N)
 
 #define DOLAP 1
 
-static void quant_block(dctcoef *src, int qp, int tx, DaalaEntropy *e)
+static void quant_block(FFV2EncCtx *s, dctcoef *src, int qp, int tx, DaalaEntropy *e)
 {
     int i;
     int len = FFV2_IDX_TO_BS(FFV2_IDX_X(tx))*FFV2_IDX_TO_BS(FFV2_IDX_Y(tx));
-    int quant_coeffs[4096] = { 0 };
-    float norm_coeffs[4096] = { 0.0f };
-    float lin_ener = 0;
 
+    /* DC value */
     encode_golomb(e, FFABS(src[0]));
     if (src[0])
         ff_daalaent_encode_bits(e, src[0] < 0, 1);
 
-    for (int i = 1; i < len; i++)
-        lin_ener += (int64_t)src[i] * (int64_t)src[i];
 
-    lin_ener = sqrtf(lin_ener);
+
+    /* ACs */
+    int quant_coeffs[4096] = { 0 };
+    float norm_coeffs[4096] = { 0.0f };
+    float gain = 0;
+
+    for (int i = 1; i < len; i++)
+        gain += (int64_t)src[i] * (int64_t)src[i];
+
+    gain = sqrtf(gain) + FLT_EPSILON;
 
     for (int i = 0; i < len - 1; i++)
-        norm_coeffs[i] = src[i + 1] / lin_ener;
+        norm_coeffs[i] = src[i + 1] / gain;
 
-    int cnt = ppp_pvq_search_c(norm_coeffs, quant_coeffs, qp, len - 1);
-    float cntf = sqrt(cnt);
+    ppp_pvq_search_c(norm_coeffs, quant_coeffs, qp, len - 1);
     int pcnt = 0;
 
-    encode_golomb(e, lin_ener);
+    encode_golomb(e, gain);
 
     for (i = 0; i < len - 1; i++) {
-        int coeff = quant_coeffs[i];
         if (pcnt >= qp)
             break;
-        pcnt += FFABS(coeff);
-        encode_golomb(e, FFABS(coeff));
+
+        int coeff = quant_coeffs[i];
+        ff_daalaent_encode_cdf_adapt(e, &s->test_cdf, FFABS(coeff), av_log2(i), qp);
         if (coeff)
             ff_daalaent_encode_bits(e, coeff < 0, 1);
+
+        pcnt += FFABS(coeff);
     }
 }
 
@@ -223,7 +230,7 @@ static int encode_block(FFV2EncCtx *s, DaalaEntropy *e, FFV2FCBuf *buf,
     for (int p = 0; p < s->planes; p++) {
         s->dsp.fwd_tx(&s->dsp, blk->type, temp, b_stride, blk->pix[p], buf->pix_stride[p]);
         s->dsp.raster_to_coding(temp2, temp, b_stride, blk->type);
-        quant_block(temp2, blk->qp, blk->type, e);
+        quant_block(s, temp2, blk->qp, blk->type, e);
     }
 
     return 0;
@@ -482,8 +489,10 @@ static int ffv2_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     FFV2EncCtx *s = avctx->priv_data;
 
     s->qp = avctx->global_quality;
+    daalaent_cdf_alloc(&s->test_cdf, 12, s->qp, 64, 0, 6, 0);
 
     daalaent_cdf_reset(&s->subdiv_cdf);
+    daalaent_cdf_reset(&s->test_cdf);
 
     if ((ret = ff_daalaent_encode_init(&ent, 0)))
         return ret;
